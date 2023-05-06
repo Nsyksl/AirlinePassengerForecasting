@@ -1,0 +1,193 @@
+# İmport Libraries
+
+import itertools
+import warnings
+import matplotlib.pyplot as plt
+import pandas as pd
+import numpy as np
+import statsmodels.api as sm
+from sklearn.metrics import mean_absolute_error
+from statsmodels.tsa.holtwinters import ExponentialSmoothing, SimpleExpSmoothing
+from statsmodels.tsa.seasonal import seasonal_decompose
+import statsmodels.api as sm
+import statsmodels.tsa.api as smt
+from statsmodels.tsa.arima.model import ARIMA
+from statsmodels.tsa.statespace.sarimax import SARIMAX
+warnings.filterwarnings('ignore')
+warnings.filterwarnings('ignore', 'statsmodels.tsa.arima.model.ARMA',
+                        FutureWarning)
+
+
+
+df = pd.read_csv("airline-passengers.csv",index_col="month", parse_dates=True)
+
+# Total Passenger Plot
+df[["total_passengers"]].plot(title="Passengers Data")
+
+df.index
+# dtype='datetime64[ns]', name='month', length=144, freq=None)
+
+df.index.freq="MS"
+
+# Train and Test 
+
+train = df[:120]
+test = df[120:]
+
+# TES Optimizer Function
+
+def tes_optimizer(train, abg, step=48):
+  best_alpha, best_beta, best_gamma, best_mae = None, None, None, float("inf")
+
+  
+  for comb in abg:
+    tes_model = ExponentialSmoothing(train, trend="add", seasonal="add", seasonal_periods=12).fit(smoothing_level=comb[0], smoothing_slope=comb[1], smoothing_seasonal=comb[2])
+    y_pred = tes_model.forecast(step)
+    mae = mean_absolute_error(test, y_pred)
+    if mae < best_mae:
+      best_alpha, best_beta, best_gamma, best_mae = comb[0],comb[1],comb[2], mae
+
+    print([round(comb[0],2), round(comb[1],2), round(comb[0],2),round(mae,4)])
+
+  print("best_alpha : ", round(best_alpha,2), "best_beta : ", round(best_beta,2), "best_gamma : ", round(best_gamma,2), "best_mae : ", round(best_mae,4))
+
+  return best_alpha, best_beta, best_gamma, best_mae
+  
+# Plot Prediction                                
+def plot_prediction(y_pred, label):
+  train["total_passengers"].plot(legend=True, label="TRAIN")
+  test["total_passengers"].plot(legend=True, label="TEST")
+
+  y_pred.plot(legend=True, label="PREDİCTİON")
+
+  mae = mean_absolute_error(test, y_pred)
+
+  plt.title(f"Train, Test and Predicted Test Using {label}, MAE : {round(mae,2)} " )
+  plt.show()
+  
+  
+alphas = betas = gammas = np.arange(0.10, 1, 0.20)
+abg = list(itertools.product(alphas, betas, gammas))
+
+best_alpha, best_beta, best_gamma, best_mae = tes_optimizer(train, abg, 24)
+
+# best_alpha :  0.3 best_beta :  0.3 best_gamma :  0.5 best_mae :  11.9947
+
+# Additive
+final_tes_model = ExponentialSmoothing(train, trend="add", seasonal="add", seasonal_periods=12).fit(smoothing_level=best_alpha,
+                                                                                                    smoothing_slope=best_beta,
+                                                                                                    smoothing_seasonal=best_gamma)
+y_pred = final_tes_model.forecast(24)
+
+plot_prediction(y_pred, "TES_Add")
+
+# Multiplicative
+final_tes_model = ExponentialSmoothing(train, trend="mul", seasonal="mul", seasonal_periods=12).fit(smoothing_level=best_alpha,
+                                                                                                    smoothing_slope=best_beta,
+                                                                                                    smoothing_seasonal=best_gamma)
+
+y_pred = final_tes_model.forecast(24)
+
+plot_prediction(y_pred, "TES_Mul")
+  
+
+# Sarıma Model
+
+p = d = q = range(0,2)
+
+pdq = list(itertools.product(p,d,q))
+
+seasonal_pdq = [(x[0], x[1], x[2], 12) for x in list(itertools.product(p,d,q))]
+
+# Sarıma Optimizer
+def sarima_optimizer(train, pdq, seaosnal_pdq):
+  best_aic, best_order, best_seasonal_order = float("inf"), float("inf"), None
+
+  for param in pdq:
+    for param_seasonal in seaosnal_pdq:
+      try: 
+        sarimax_model = SARIMAX(train, order=param, seasonal_order =  param_seasonal)
+        results = sarimax_model.fit(disp=0)
+        aic = results.aic
+
+        if aic <best_aic:
+          best_aic, best_order, best_seasonal_order = aic, param, param_seasonal
+
+        print("SARIMA{}x{}12 - AIC:{} ".format(param, param_seasonal, aic))
+      except:
+        continue
+
+      
+  print("SARIMA{}x{}12 - AIC:{} ".format(best_aic, best_order, best_seasonal_order))
+  return best_order, best_seasonal_order
+
+
+best_order, best_seasonal_order = sarima_optimizer(train, pdq, seasonal_pdq)
+
+final_sarıma_model = SARIMAX(train, order=best_order, seasonal_order=best_seasonal_order).fit(disp=0)
+
+y_pred_test = final_sarıma_model.get_forecast(steps=24)
+
+y_pred =y_pred_test.predicted_mean
+
+y_pred = pd.Series(y_pred, index=test.index)
+
+plot_prediction(y_pred, "SARIMA Model")
+
+
+# Sarıma Model Optimizer MAE 
+def sarima_optimizer_mae(train, pdq, seaosnal_pdq):
+  best_mae, best_order, best_seasonal_order = float("inf"), float("inf"), None
+
+  for param in pdq:
+    for param_seasonal in seaosnal_pdq:
+      try: 
+        sarimax_model = SARIMAX(train, order=param, seasonal_order =  param_seasonal)
+        results = sarimax_model.fit(disp=0)
+        y_pred_test = results.get_forecast(steps=24)
+        y_pred = y_pred_test.predicted_mean
+        mae = mean_absolute_error(test, y_pred)
+
+        if mae <best_mae:
+          best_mae, best_order, best_seasonal_order = mae, param, param_seasonal
+
+        print("SARIMA{}x{}12 - AIC:{} ".format(param, param_seasonal, mae))
+      except:
+        continue
+
+      
+  print("SARIMA{}x{}12 - AIC:{} ".format(best_mae, best_order, best_seasonal_order))
+  return best_order, best_seasonal_order
+
+best_order, best_seasonal_order = sarima_optimizer_mae(train, pdq, seasonal_pdq)
+
+# SARIMA30.626157879495242x(0, 0, 0)12 - AIC:(1, 1, 1, 12)
+
+final_sarıma_model_mae = SARIMAX(train, order=best_order, seasonal_order=best_seasonal_order).fit(disp=0)
+
+y_pred_test = final_sarıma_model_mae.get_forecast(steps=24)
+
+y_pred =y_pred_test.predicted_mean
+
+y_pred = pd.Series(y_pred, index=test.index)
+
+plot_prediction(y_pred, "SARIMA Model With Mae")
+
+final_tes_model = ExponentialSmoothing(df, trend="add", seasonal="add", seasonal_periods=12).fit(smoothing_level=best_alpha,
+                                                                                                    smoothing_slope=best_beta,
+                                                                                                    smoothing_seasonal=best_gamma)
+
+final_tes_model.forecast(6)
+
+
+################
+# Output 
+################
+# 1961-01-01    450.286334
+# 1961-02-01    429.302023
+# 1961-03-01    475.721718
+# 1961-04-01    502.017567
+# 1961-05-01    516.825570
+# 1961-06-01    579.037179
+#  Freq: MS, dtype: float64
+  
